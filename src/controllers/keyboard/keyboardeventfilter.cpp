@@ -6,6 +6,7 @@
 #include <QtDebug>
 
 #include "moc_keyboardeventfilter.cpp"
+#include "preferences/constants.h"
 #include "util/cmdlineargs.h"
 #include "util/logger.h"
 #include "widget/wbasewidget.h"
@@ -59,6 +60,13 @@ KeyboardEventFilter::KeyboardEventFilter(UserSettingsPointer pConfig,
     m_enabled = m_pConfig->getValue(ConfigKey(QStringLiteral("[Keyboard]"),
                                             QStringLiteral("Enabled")),
             true);
+
+    mixxx::preferences::Tooltips cfgOnlyKbdShortcts =
+            pConfig->getValue(
+                    ConfigKey("[Controls]", "Tooltips"),
+                    mixxx::preferences::Tooltips::OnlyKbdShortcuts);
+    m_showOnlyKeyboardShortcuts =
+            cfgOnlyKbdShortcts == mixxx::preferences::Tooltips::OnlyKbdShortcuts;
 
     createKeyboardConfig();
 
@@ -266,6 +274,14 @@ void KeyboardEventFilter::setEnabled(bool enabled) {
     emit shortcutsEnabled(enabled);
 }
 
+void KeyboardEventFilter::setShowOnlyKbdShortcuts(bool enabled) {
+    if (m_showOnlyKeyboardShortcuts == enabled) {
+        return;
+    }
+    m_showOnlyKeyboardShortcuts = enabled;
+    emit showOnlyKbdShortcuts(enabled);
+}
+
 void KeyboardEventFilter::registerShortcutWidget(WBaseWidget* pWidget) {
     m_widgets.append(pWidget);
 
@@ -276,6 +292,19 @@ void KeyboardEventFilter::registerShortcutWidget(WBaseWidget* pWidget) {
             this,
             [pWidget](bool enabled) {
                 pWidget->toggleKeyboardShortcutHints(enabled);
+            });
+
+    connectShowOnlyKbdShortcuts(pWidget);
+}
+
+void KeyboardEventFilter::connectShowOnlyKbdShortcuts(WBaseWidget* pWidget) {
+    // If toggled in Preferences -> Interface, we tell the widgets to show
+    // only the keyboard shortcuts tooltip.
+    connect(this,
+            &KeyboardEventFilter::showOnlyKbdShortcuts,
+            this,
+            [pWidget](bool enabled) {
+                pWidget->toggleShowOnlyKeyboardShortcuts(enabled);
             });
 }
 
@@ -297,7 +326,10 @@ void KeyboardEventFilter::updateWidgetShortcuts() {
         pWidget->setShortcutTooltip(shortcutHints.join(QStringLiteral("\n")));
     }
     // Update widget tooltips (WBaseWidget handles no-ops).
+    // TODO make this two set() functions and one update() function to avoid the
+    // double update.
     emit shortcutsEnabled(m_enabled);
+    emit showOnlyKbdShortcuts(m_showOnlyKeyboardShortcuts);
 }
 
 void KeyboardEventFilter::clearWidgets() {
