@@ -21,11 +21,25 @@ WaveformRenderBeat::WaveformRenderBeat(WaveformWidgetRenderer* waveformWidget,
           m_isSlipRenderer(type == ::WaveformRendererAbstract::Slip) {
     initForRectangles<UniColorMaterial>(0);
     setUsePreprocess(true);
+
+    auto pSubNode = std::make_unique<GeometryNode>();
+    m_pSubNode = pSubNode.get();
+    m_pSubNode->initForRectangles<UniColorMaterial>(0);
+    appendChildNode(std::move(pSubNode));
 }
 
 void WaveformRenderBeat::setup(const QDomNode& node, const SkinContext& skinContext) {
     m_color = QColor(skinContext.selectString(node, QStringLiteral("BeatColor")));
     m_color = WSkinColor::getCorrectColor(m_color).toRgb();
+
+    m_subColor = QColor(skinContext.selectString(
+            node, QStringLiteral("BeatSubdivisionColor")));
+    if (m_subColor.isValid()) {
+        m_subColor = WSkinColor::getCorrectColor(m_subColor).toRgb();
+    }
+
+    m_beatThickness = skinContext.selectDouble(
+            node, QStringLiteral("BeatThickness"), 1.0);
 }
 
 void WaveformRenderBeat::draw(QPainter* painter, QPaintEvent* event) {
@@ -38,6 +52,8 @@ void WaveformRenderBeat::preprocess() {
     if (!preprocessInner()) {
         geometry().allocate(0);
         markDirtyGeometry();
+        m_pSubNode->geometry().allocate(0);
+        m_pSubNode->markDirtyGeometry();
     }
 }
 
@@ -56,16 +72,20 @@ bool WaveformRenderBeat::preprocessInner() {
         return false;
     }
 
+    const bool showSubdivisions = m_subColor.isValid();
 #ifndef __SCENEGRAPH__
     int alpha = m_waveformRenderer->getBeatGridAlpha();
     if (alpha == 0) {
         return false;
     }
     m_color.setAlphaF(alpha / 100.0f);
+    if (showSubdivisions) {
+        m_subColor.setAlphaF(alpha / 100.0f);
+    }
 #endif
 
-    if (!m_color.alpha()) {
-        // Don't render the beatgrid lines is there are fully transparent
+    if (!m_color.alpha() && !(showSubdivisions && m_subColor.alpha())) {
+        // Don't render the beatgrid lines if they are fully transparent
         return true;
     }
 
@@ -105,33 +125,64 @@ bool WaveformRenderBeat::preprocessInner() {
         numBeatsInRange++;
     }
 
-    const int reserved = numBeatsInRange * numVerticesPerLine;
-    geometry().allocate(reserved);
+    const int onBeatVertices = numBeatsInRange * numVerticesPerLine;
+    const int subVertices = showSubdivisions ? numBeatsInRange * 3 * numVerticesPerLine : 0;
+    geometry().allocate(onBeatVertices);
+    m_pSubNode->geometry().allocate(subVertices);
 
-    VertexUpdater vertexUpdater{geometry().vertexDataAs<Geometry::Point2D>()};
+    VertexUpdater beatUpdater{geometry().vertexDataAs<Geometry::Point2D>()};
+    VertexUpdater subUpdater{m_pSubNode->geometry().vertexDataAs<Geometry::Point2D>()};
+
+    const float breadth = m_isSlipRenderer ? rendererBreadth / 2 : rendererBreadth;
+    const float subBreadth = breadth * 0.5f;
+    const float subStart = (breadth - subBreadth) * 0.5f;
+    const float subEnd = subStart + subBreadth;
+    const float halfThickness = static_cast<float>(m_beatThickness * 0.5);
 
     for (auto it = trackBeats->iteratorFrom(startPosition);
             it != trackBeats->cend() && *it <= endPosition;
             ++it) {
-        double beatPosition = it->toEngineSamplePos();
+        const auto beatPos = *it;
+        const auto beatLength = it.beatLengthFrames();
         double xBeatPoint =
                 m_waveformRenderer->transformSamplePositionInRendererWorld(
-                        beatPosition, positionType);
+                        beatPos.toEngineSamplePos(), positionType);
 
         xBeatPoint = qRound(xBeatPoint * devicePixelRatio) / devicePixelRatio;
 
         const float x1 = static_cast<float>(xBeatPoint);
-        const float x2 = x1 + 1.f;
+        // On-beat: m_beatThickness wide, full breadth, centered on the beat.
+        beatUpdater.addRectangle(
+                {x1 + 0.5f - halfThickness, 0.f},
+                {x1 + 0.5f + halfThickness, breadth});
 
-        vertexUpdater.addRectangle({x1, 0.f},
-                {x2, m_isSlipRenderer ? rendererBreadth / 2 : rendererBreadth});
+        if (!showSubdivisions) {
+            continue;
+        }
+
+        // 3 subdivisions at +1/4, +1/2, +3/4 of this beat's length:
+        // 1px wide, centered half-breadth.
+        for (int i = 1; i <= 3; ++i) {
+            const auto subPos = beatPos + beatLength * i / 4.0;
+            double xSub = m_waveformRenderer->transformSamplePositionInRendererWorld(
+                    subPos.toEngineSamplePos(), positionType);
+            xSub = qRound(xSub * devicePixelRatio) / devicePixelRatio;
+            const float sx1 = static_cast<float>(xSub);
+            subUpdater.addRectangle({sx1, subStart}, {sx1 + 1.f, subEnd});
+        }
     }
     markDirtyGeometry();
+    m_pSubNode->markDirtyGeometry();
 
-    DEBUG_ASSERT(reserved == vertexUpdater.index());
+    DEBUG_ASSERT(onBeatVertices == beatUpdater.index());
+    DEBUG_ASSERT(subVertices == subUpdater.index());
 
     material().setUniform(1, m_color);
     markDirtyMaterial();
+    if (showSubdivisions) {
+        m_pSubNode->material().setUniform(1, m_subColor);
+        m_pSubNode->markDirtyMaterial();
+    }
 
     return true;
 }

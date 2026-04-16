@@ -38,7 +38,10 @@ class allshader::WaveformRenderBeat final
 
   private:
     QColor m_color;
+    QColor m_subColor;
+    double m_beatThickness{1.0};
     bool m_isSlipRenderer;
+    rendergraph::GeometryNode* m_pSubNode{};
 
     bool preprocessInner();
 
